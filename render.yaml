@@ -1,10 +1,13 @@
 services:
   - type: web
     name: tempchat-backend
-    runtime: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.11
       - key: DATABASE_URL
         sync: false
       - key: FRONTEND_URL
