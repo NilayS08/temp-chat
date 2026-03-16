@@ -15,7 +15,8 @@ is_postgres = DATABASE_URL.startswith("postgresql")
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    **( {"pool_size": 10, "max_overflow": 20} if is_postgres else {} )
+    connect_args={"statement_cache_size": 0} if is_postgres else {},
+    **( {"pool_size": 5, "max_overflow": 10} if is_postgres else {} )
 )
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
