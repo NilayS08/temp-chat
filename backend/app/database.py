@@ -7,7 +7,17 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=10, max_overflow=20)
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is not set")
+
+is_postgres = DATABASE_URL.startswith("postgresql")
+
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    **( {"pool_size": 10, "max_overflow": 20} if is_postgres else {} )
+)
+
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 class Base(DeclarativeBase):

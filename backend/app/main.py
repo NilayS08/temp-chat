@@ -1,6 +1,6 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import json, uuid
 from datetime import datetime, timezone
@@ -14,12 +14,19 @@ from .models import Message, OwnerToken, Session as ChatSession, Chat
 from .routers import chats, messages
 from .ws.manager import manager
 
-app = FastAPI(title="TempChat API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
 
-# CORS — allow the frontend origin
+app = FastAPI(title="TempChat API", version="1.0.0", lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173"), "*"],
+    allow_origins=[
+        os.getenv("FRONTEND_URL", "http://localhost:5173"),
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -28,30 +35,20 @@ app.add_middleware(
 app.include_router(chats.router)
 app.include_router(messages.router)
 
-@app.on_event("startup")
-async def startup():
-    # Create tables if they don't exist (for local dev with SQLite)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-# ─── WebSocket endpoint ────────────────────────────────────────────────────────
 
 @app.websocket("/ws/{chat_id}")
 async def websocket_endpoint(websocket: WebSocket, chat_id: str):
     await manager.connect(websocket, chat_id)
 
-    # We expect the client to send an "init" message first with their identity
     session_id = None
     sender_name = "Guest"
     is_owner = False
 
     try:
         async with AsyncSessionLocal() as db:
-            # Validate chat exists
             try:
                 chat_uuid = uuid.UUID(chat_id)
             except ValueError:
@@ -71,27 +68,27 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
 
             async with AsyncSessionLocal() as db:
 
-                # ── Init: client identifies itself ──────────────────────────
                 if msg_type == "init":
                     owner_token = data.get("owner_token")
                     nickname = data.get("nickname", "Guest")[:50]
 
                     if owner_token:
-                        # Verify owner token
-                        result = await db.execute(
-                            select(OwnerToken).where(
-                                OwnerToken.token == uuid.UUID(owner_token),
-                                OwnerToken.chat_id == uuid.UUID(chat_id)
+                        try:
+                            result = await db.execute(
+                                select(OwnerToken).where(
+                                    OwnerToken.token == uuid.UUID(owner_token),
+                                    OwnerToken.chat_id == uuid.UUID(chat_id)
+                                )
                             )
-                        )
-                        tok = result.scalar_one_or_none()
-                        if tok:
-                            is_owner = True
-                            sender_name = "Owner"
-                            session_id = str(tok.owner_id)
+                            tok = result.scalar_one_or_none()
+                            if tok:
+                                is_owner = True
+                                sender_name = "Owner"
+                                session_id = str(tok.owner_id)
+                        except (ValueError, Exception):
+                            pass
 
                     if not is_owner:
-                        # Create guest session
                         session = ChatSession(
                             chat_id=uuid.UUID(chat_id),
                             nickname=nickname,
@@ -103,7 +100,6 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
                         session_id = str(session.session_id)
                         sender_name = nickname
 
-                    # Ack back to this client
                     await manager.send_personal(websocket, {
                         "type": "init_ack",
                         "session_id": session_id,
@@ -112,7 +108,6 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
                         "user_count": manager.get_user_count(chat_id)
                     })
 
-                    # Broadcast join notification to others
                     await manager.broadcast(chat_id, {
                         "type": "join",
                         "sender_name": sender_name,
@@ -120,13 +115,11 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }, exclude=websocket)
 
-                # ── Chat message ────────────────────────────────────────────
                 elif msg_type == "message":
                     content = data.get("content", "").strip()
                     if not content or len(content) > 2000:
                         continue
 
-                    # Persist to DB
                     msg = Message(
                         chat_id=uuid.UUID(chat_id),
                         sender_name=sender_name,
@@ -137,7 +130,6 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
                     await db.commit()
                     await db.refresh(msg)
 
-                    # Broadcast to all in room (including sender)
                     await manager.broadcast(chat_id, {
                         "type": "message",
                         "message_id": str(msg.message_id),
@@ -148,7 +140,6 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
                         "session_id": session_id
                     })
 
-                # ── Typing indicator ────────────────────────────────────────
                 elif msg_type == "typing":
                     await manager.broadcast(chat_id, {
                         "type": "typing",
@@ -159,7 +150,6 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
     except WebSocketDisconnect:
         manager.disconnect(websocket, chat_id)
         if session_id and not is_owner:
-            # Mark guest session inactive
             async with AsyncSessionLocal() as db:
                 try:
                     sess_uuid = uuid.UUID(session_id)
@@ -173,7 +163,6 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
                 except Exception:
                     pass
 
-        # Broadcast leave notification
         await manager.broadcast(chat_id, {
             "type": "leave",
             "sender_name": sender_name,
@@ -181,5 +170,5 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
-    except Exception as e:
+    except Exception:
         manager.disconnect(websocket, chat_id)

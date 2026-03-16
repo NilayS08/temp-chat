@@ -12,17 +12,16 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 @router.post("/create_chat", response_model=CreateChatResponse)
 async def create_chat(db: AsyncSession = Depends(get_db)):
-    # 1. Create anonymous owner user
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    
     user = User()
     db.add(user)
     await db.flush()
 
-    # 2. Create the chat room
     chat = Chat(owner_id=user.user_id)
     db.add(chat)
     await db.flush()
 
-    # 3. Generate owner token
     token = OwnerToken(chat_id=chat.chat_id, owner_id=user.user_id)
     db.add(token)
     await db.flush()
