@@ -4,6 +4,12 @@ import { createChat } from '../api/client'
 import { saveRoom, getRooms } from '../utils/roomStorage'
 
 export default function Home() {
+  // Add this useEffect at the top of the Home component
+  useEffect(() => {
+    // Ping backend on page load to wake it up from sleep
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/health`)
+      .catch(() => {}) // silently ignore errors
+  }, [])
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
   const existingRooms = getRooms()
